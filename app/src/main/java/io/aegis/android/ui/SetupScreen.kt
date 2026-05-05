@@ -2,10 +2,7 @@ package io.aegis.android.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -29,7 +26,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -37,20 +33,20 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.aegis.android.core.Aegis
 import io.aegis.android.core.AegisError
-import io.aegis.android.core.AegisIdentity
 import io.aegis.android.core.VaultError
 import io.aegis.android.session.AppSession
 import io.aegis.android.session.AppSessionException
+import io.aegis.android.ui.components.IdentityCard
+import io.aegis.android.ui.components.LabeledRow
+import io.aegis.android.ui.components.RelayEditor
 import kotlinx.coroutines.launch
 
 /**
- * Setup / Identity entry point.
- *
- * Branches on `AppSession.state`:
- *   - `FirstRun`: relay-URL config + create-identity-with-passphrase form
- *   - `Locked`: relay-URL config + unlock-with-passphrase form
- *   - `Unlocked(identity)`: relay-URL config + identity summary +
- *                            lock + reset
+ * Pre-Mail-shell setup surface — only seen while the vault is in
+ * `FirstRun` or `Locked`. Once unlocked, [io.aegis.android.ui.RootScreen]
+ * swaps the root to [MailScreen]. The post-unlock identity-summary
+ * branch in [SetupScreen] still renders if a caller forces it (used in
+ * Compose previews) but the live app reaches [MailScreen] instead.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -82,7 +78,7 @@ fun SetupScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            RelaySection(
+            RelayEditor(
                 relayUrlInput = relayUrlInput,
                 onRelayUrlInputChange = { relayUrlInput = it },
                 savedRelayUrl = savedRelayUrl,
@@ -114,7 +110,7 @@ fun SetupScreen(
                         onStatus = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } },
                     )
                 is AppSession.State.Unlocked ->
-                    UnlockedIdentitySection(
+                    IdentityCard(
                         session = session,
                         identity = s.identity,
                         onStatus = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } },
@@ -124,48 +120,6 @@ fun SetupScreen(
             HorizontalDivider()
 
             AboutSection()
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun RelaySection(
-    relayUrlInput: String,
-    onRelayUrlInputChange: (String) -> Unit,
-    savedRelayUrl: String?,
-    onSave: () -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Relay", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "The relay accepts encrypted envelopes addressed to your identity. " +
-                "It cannot read message contents.",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        OutlinedTextField(
-            value = relayUrlInput,
-            onValueChange = onRelayUrlInputChange,
-            singleLine = true,
-            label = { Text("https://relay.example.com") },
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Uri,
-                capitalization = KeyboardCapitalization.None,
-                autoCorrectEnabled = false,
-            ),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Button(
-            onClick = onSave,
-            enabled = relayUrlInput.trim().isNotEmpty(),
-        ) {
-            Text("Save relay URL")
-        }
-        if (!savedRelayUrl.isNullOrEmpty()) {
-            Text(
-                "Currently using: $savedRelayUrl",
-                style = MaterialTheme.typography.bodySmall,
-            )
         }
     }
 }
@@ -306,66 +260,9 @@ private fun UnlockSection(
 }
 
 @Composable
-private fun UnlockedIdentitySection(
-    session: AppSession,
-    identity: AegisIdentity,
-    onStatus: (String) -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Identity", style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(4.dp))
-        LabeledRow("Identity ID", identity.identityId)
-        LabeledRow(
-            "Signed",
-            if (identity.document.signature == null) "no" else "yes",
-        )
-        LabeledRow(
-            "Encryption keys",
-            identity.document.encryptionKeys.size.toString(),
-        )
-        LabeledRow(
-            "Signing keys",
-            identity.document.signingKeys.size.toString(),
-        )
-
-        Button(onClick = { session.lock() }) {
-            Text("Lock vault")
-        }
-        Button(
-            onClick = {
-                scope.launch {
-                    try {
-                        session.deleteIdentity()
-                        onStatus("Identity wiped from this device.")
-                    } catch (e: Throwable) {
-                        onStatus("Reset failed — ${e.message ?: e::class.simpleName}")
-                    }
-                }
-            },
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.errorContainer,
-                contentColor = MaterialTheme.colorScheme.onErrorContainer,
-            ),
-        ) {
-            Text("Reset identity (wipe vault)")
-        }
-    }
-}
-
-@Composable
 private fun AboutSection() {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("About", style = MaterialTheme.typography.titleMedium)
         LabeledRow("FFI version", Aegis.version())
-    }
-}
-
-@Composable
-private fun LabeledRow(label: String, value: String) {
-    Column(modifier = Modifier.padding(PaddingValues(vertical = 2.dp))) {
-        Text(label, style = MaterialTheme.typography.labelSmall)
-        Text(value, style = MaterialTheme.typography.bodyMedium)
     }
 }

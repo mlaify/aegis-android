@@ -89,6 +89,10 @@ dependencies {
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+    // Mailbox icons (Inbox / Send / Drafts) ship in the extended set
+    // — only Settings is in material-icons-core. Compose tree-shakes
+    // unused icons under R8.
+    implementation(libs.androidx.compose.material.icons.extended)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     // UniFFI's generated Kotlin bindings load the .so libs through JNA.
