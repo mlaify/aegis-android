@@ -11,6 +11,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -30,25 +31,26 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import io.aegis.android.core.Aegis
 import io.aegis.android.core.AegisError
 import io.aegis.android.core.AegisIdentity
+import io.aegis.android.core.VaultError
 import io.aegis.android.session.AppSession
 import io.aegis.android.session.AppSessionException
 import kotlinx.coroutines.launch
 
 /**
- * First-run / configuration screen.
+ * Setup / Identity entry point.
  *
- * Two responsibilities for v0, mirroring aegis-apple's SetupView:
- *  1. Save the user's relay URL (persisted via DataStore).
- *  2. Generate a fresh hybrid PQ identity locally via the AegisFFI
- *     bridge, and display the resulting identity_id.
- *
- * Inbox / Compose / Identity-detail / publish-to-relay flows land in
- * follow-up PRs once Setup is solid on both iOS and Android.
+ * Branches on `AppSession.state`:
+ *   - `FirstRun`: relay-URL config + create-identity-with-passphrase form
+ *   - `Locked`: relay-URL config + unlock-with-passphrase form
+ *   - `Unlocked(identity)`: relay-URL config + identity summary +
+ *                            lock + reset
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,10 +58,9 @@ fun SetupScreen(
     session: AppSession = viewModel(),
 ) {
     val savedRelayUrl by session.relayUrl.collectAsStateWithLifecycle()
-    val identity by session.identity.collectAsStateWithLifecycle()
+    val state by session.state.collectAsStateWithLifecycle()
 
     var relayUrlInput by remember { mutableStateOf("") }
-    var generating by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -89,7 +90,9 @@ fun SetupScreen(
                     scope.launch {
                         try {
                             session.saveRelayUrl(relayUrlInput)
-                            snackbarHostState.showSnackbar("Saved ${session.relayUrl.value ?: ""}")
+                            snackbarHostState.showSnackbar(
+                                "Saved ${session.relayUrl.value ?: ""}",
+                            )
                         } catch (e: AppSessionException) {
                             snackbarHostState.showSnackbar(e.message ?: "Invalid URL")
                         }
@@ -99,28 +102,24 @@ fun SetupScreen(
 
             HorizontalDivider()
 
-            IdentitySection(
-                identity = identity,
-                generating = generating,
-                onGenerate = {
-                    generating = true
-                    scope.launch {
-                        try {
-                            val id = session.newIdentityId()
-                            session.generateIdentity(id)
-                            snackbarHostState.showSnackbar(
-                                "Generated ${session.identity.value?.identityId ?: ""}",
-                            )
-                        } catch (e: AegisError) {
-                            snackbarHostState.showSnackbar("Error — ${e.message}")
-                        } catch (e: Throwable) {
-                            snackbarHostState.showSnackbar("Error — ${e.message ?: e::class.simpleName}")
-                        } finally {
-                            generating = false
-                        }
-                    }
-                },
-            )
+            when (val s = state) {
+                AppSession.State.FirstRun ->
+                    CreateIdentitySection(
+                        session = session,
+                        onStatus = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } },
+                    )
+                AppSession.State.Locked ->
+                    UnlockSection(
+                        session = session,
+                        onStatus = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } },
+                    )
+                is AppSession.State.Unlocked ->
+                    UnlockedIdentitySection(
+                        session = session,
+                        identity = s.identity,
+                        onStatus = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } },
+                    )
+            }
 
             HorizontalDivider()
 
@@ -172,34 +171,185 @@ private fun RelaySection(
 }
 
 @Composable
-private fun IdentitySection(
-    identity: AegisIdentity?,
-    generating: Boolean,
-    onGenerate: () -> Unit,
+private fun CreateIdentitySection(
+    session: AppSession,
+    onStatus: (String) -> Unit,
 ) {
+    var passphrase by remember { mutableStateOf("") }
+    var passphraseConfirm by remember { mutableStateOf("") }
+    var creating by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Identity", style = MaterialTheme.typography.titleMedium)
+        Text("Create identity", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Generation is local — keys never leave the device. v0 keeps the " +
-                "identity in memory only; AndroidX Keystore-backed storage lands " +
-                "in a follow-up.",
+            "Your identity is generated locally and encrypted at rest under " +
+                "the passphrase you choose. Keys never leave the device. The " +
+                "passphrase isn't recoverable — if you forget it you'll need " +
+                "to reset the identity and start over.",
             style = MaterialTheme.typography.bodySmall,
         )
-        Button(onClick = onGenerate, enabled = !generating) {
-            Text(
-                when {
-                    generating -> "Generating…"
-                    identity == null -> "Generate identity"
-                    else -> "Regenerate identity"
-                },
-            )
+        OutlinedTextField(
+            value = passphrase,
+            onValueChange = { passphrase = it },
+            singleLine = true,
+            label = { Text("Passphrase") },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = passphraseConfirm,
+            onValueChange = { passphraseConfirm = it },
+            singleLine = true,
+            label = { Text("Confirm passphrase") },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = {
+                creating = true
+                scope.launch {
+                    try {
+                        val id = session.newIdentityId()
+                        session.createIdentity(identityId = id, passphrase = passphrase)
+                        onStatus("Created $id")
+                        passphrase = ""
+                        passphraseConfirm = ""
+                    } catch (e: AegisError) {
+                        onStatus("Error — ${e.message}")
+                    } catch (e: VaultError) {
+                        onStatus("Error — ${e.message}")
+                    } catch (e: Throwable) {
+                        onStatus("Error — ${e.message ?: e::class.simpleName}")
+                    } finally {
+                        creating = false
+                    }
+                }
+            },
+            enabled = !creating
+                && passphrase.isNotEmpty()
+                && passphrase == passphraseConfirm,
+        ) {
+            Text(if (creating) "Creating…" else "Create identity")
         }
-        if (identity != null) {
-            Spacer(Modifier.height(4.dp))
-            LabeledRow("Identity ID", identity.identityId)
-            LabeledRow("Signed", if (identity.document.signature == null) "no" else "yes")
-            LabeledRow("Encryption keys", identity.document.encryptionKeys.size.toString())
-            LabeledRow("Signing keys", identity.document.signingKeys.size.toString())
+    }
+}
+
+@Composable
+private fun UnlockSection(
+    session: AppSession,
+    onStatus: (String) -> Unit,
+) {
+    var passphrase by remember { mutableStateOf("") }
+    var unlocking by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Unlock", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Your encrypted identity vault is on this device. Enter the " +
+                "passphrase you set when you created it. \"Reset\" wipes the " +
+                "local vault — the identity itself stays whatever the relay " +
+                "knows about, but you'll lose the keys to operate it from " +
+                "this device.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(
+            value = passphrase,
+            onValueChange = { passphrase = it },
+            singleLine = true,
+            label = { Text("Passphrase") },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = {
+                unlocking = true
+                scope.launch {
+                    try {
+                        session.unlock(passphrase = passphrase)
+                        passphrase = ""
+                    } catch (e: VaultError.WrongPassphrase) {
+                        onStatus("Wrong passphrase.")
+                    } catch (e: Throwable) {
+                        onStatus("Unlock failed — ${e.message ?: e::class.simpleName}")
+                    } finally {
+                        unlocking = false
+                    }
+                }
+            },
+            enabled = !unlocking && passphrase.isNotEmpty(),
+        ) {
+            Text(if (unlocking) "Unlocking…" else "Unlock")
+        }
+        Button(
+            onClick = {
+                scope.launch {
+                    try {
+                        session.deleteIdentity()
+                    } catch (e: Throwable) {
+                        onStatus("Reset failed — ${e.message ?: e::class.simpleName}")
+                    }
+                }
+            },
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            ),
+        ) {
+            Text("Reset identity (wipe vault)")
+        }
+    }
+}
+
+@Composable
+private fun UnlockedIdentitySection(
+    session: AppSession,
+    identity: AegisIdentity,
+    onStatus: (String) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Identity", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(4.dp))
+        LabeledRow("Identity ID", identity.identityId)
+        LabeledRow(
+            "Signed",
+            if (identity.document.signature == null) "no" else "yes",
+        )
+        LabeledRow(
+            "Encryption keys",
+            identity.document.encryptionKeys.size.toString(),
+        )
+        LabeledRow(
+            "Signing keys",
+            identity.document.signingKeys.size.toString(),
+        )
+
+        Button(onClick = { session.lock() }) {
+            Text("Lock vault")
+        }
+        Button(
+            onClick = {
+                scope.launch {
+                    try {
+                        session.deleteIdentity()
+                        onStatus("Identity wiped from this device.")
+                    } catch (e: Throwable) {
+                        onStatus("Reset failed — ${e.message ?: e::class.simpleName}")
+                    }
+                }
+            },
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            ),
+        ) {
+            Text("Reset identity (wipe vault)")
         }
     }
 }
@@ -208,7 +358,7 @@ private fun IdentitySection(
 private fun AboutSection() {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("About", style = MaterialTheme.typography.titleMedium)
-        LabeledRow("FFI version", io.aegis.android.core.Aegis.version())
+        LabeledRow("FFI version", Aegis.version())
     }
 }
 

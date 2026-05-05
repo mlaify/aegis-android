@@ -8,45 +8,67 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.aegis.android.core.Aegis
 import io.aegis.android.core.AegisIdentity
+import io.aegis.android.core.VaultError
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /**
  * Process-wide state for the current launch.
  *
- * Mirrors aegis-apple's `AppSession` semantics:
- *   - relay URL persisted across launches (here via DataStore Preferences;
- *     iOS uses UserDefaults).
- *   - identity stays in memory only for v0; encrypted-at-rest persistence
- *     (Android Keystore + EncryptedSharedPreferences) is the next iteration.
+ * State machine, mirroring aegis-apple's `AppSession.State`:
+ *   - `FirstRun` — no vault on this device; SetupScreen shows the
+ *                  identity-creation flow.
+ *   - `Locked`   — vault exists but masterKey isn't held in memory;
+ *                  SetupScreen shows the unlock flow.
+ *   - `Unlocked(identity)` — vault unlocked, identity available;
+ *                  SetupScreen shows the configured identity.
  *
- * Exposed as a ViewModel so Compose can observe via `viewModel()` —
- * keeps the iOS @Observable / Android StateFlow patterns each idiomatic
- * to their platform without forcing Android into a SwiftUI mental model.
+ * Relay URL is persisted via DataStore Preferences; identity persistence
+ * is now AndroidX Keystore + SharedPreferences via the AegisCore vault
+ * layer ([Aegis.createVault] / [Aegis.unlockVault] / [Aegis.lockVault]).
  */
 class AppSession(application: Application) : AndroidViewModel(application) {
+
+    sealed interface State {
+        object FirstRun : State
+        object Locked : State
+        data class Unlocked(val identity: AegisIdentity) : State
+    }
 
     private val _relayUrl = MutableStateFlow<String?>(null)
     val relayUrl: StateFlow<String?> = _relayUrl
 
-    private val _identity = MutableStateFlow<AegisIdentity?>(null)
-    val identity: StateFlow<AegisIdentity?> = _identity
+    private val _state = MutableStateFlow<State>(State.FirstRun)
+    val state: StateFlow<State> = _state
 
     init {
         viewModelScope.launch {
+            // Determine initial state by inspecting the Keystore vault.
+            // We do the SharedPreferences read off the main thread to
+            // avoid the StrictMode warning Compose may emit on cold
+            // start.
+            _state.value = withContext(Dispatchers.IO) {
+                try {
+                    if (Aegis.isVaultPresent()) State.Locked else State.FirstRun
+                } catch (_: VaultError.NotConfigured) {
+                    // If init order is wrong (configure() not called
+                    // yet), fail open to FirstRun. Better than getting
+                    // stuck in a never-resolving Locked state.
+                    State.FirstRun
+                }
+            }
             val prefs = getApplication<Application>().dataStore.data.first()
             _relayUrl.value = prefs[RELAY_URL_KEY]
         }
     }
 
-    /**
-     * Validate, normalize, and persist the relay URL.
-     *
-     * @throws AppSessionException if the URL is empty or its scheme isn't http(s).
-     */
+    /** Validate, normalize, and persist the relay URL. */
+    @Throws(AppSessionException::class)
     suspend fun saveRelayUrl(raw: String) {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) throw AppSessionException.EmptyRelayUrl
@@ -64,15 +86,42 @@ class AppSession(application: Application) : AndroidViewModel(application) {
         _relayUrl.value = canonical
     }
 
-    /**
-     * Generate a fresh hybrid PQ identity through the FFI bridge,
-     * sign the document, and replace [identity] with the result.
-     *
-     * @throws io.aegis.android.core.AegisError on FFI failure.
-     */
-    fun generateIdentity(identityId: String) {
-        val unsigned = Aegis.generateIdentity(identityId)
-        _identity.value = Aegis.signIdentityDocument(unsigned)
+    /** Generate a fresh hybrid PQ identity through the FFI bridge,
+     *  sign it, then persist it under the supplied passphrase.
+     *  Transitions to [State.Unlocked]. */
+    suspend fun createIdentity(identityId: String, passphrase: String) {
+        withContext(Dispatchers.IO) {
+            val unsigned = Aegis.generateIdentity(identityId)
+            val signed = Aegis.signIdentityDocument(unsigned)
+            Aegis.createVault(identity = signed, passphrase = passphrase)
+            _state.value = State.Unlocked(signed)
+        }
+    }
+
+    /** Attempt to unlock the on-device vault. On success, transitions
+     *  to [State.Unlocked]. On wrong passphrase, leaves state as
+     *  [State.Locked] and rethrows. */
+    suspend fun unlock(passphrase: String) {
+        withContext(Dispatchers.IO) {
+            Aegis.unlockVault(passphrase)
+            val identity = Aegis.loadIdentity()
+            _state.value = State.Unlocked(identity)
+        }
+    }
+
+    /** Drop the in-memory masterKey. The vault stays in storage. */
+    fun lock() {
+        Aegis.lockVault()
+        _state.value = State.Locked
+    }
+
+    /** Wipe the on-device vault entirely. After this the next launch
+     *  is a first-run scenario. Used by the "Reset identity" button. */
+    suspend fun deleteIdentity() {
+        withContext(Dispatchers.IO) {
+            Aegis.deleteVault()
+            _state.value = State.FirstRun
+        }
     }
 
     /**
