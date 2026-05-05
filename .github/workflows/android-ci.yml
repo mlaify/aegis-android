@@ -1,0 +1,72 @@
+name: Android CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # aegis-core and aegis-ffi must be cloned as siblings of this repo —
+      # the FFI crate path-deps to ../aegis-core, and our build-jni script
+      # path-deps to ../aegis-ffi.
+      - name: Checkout aegis-core sibling
+        run: |
+          BRANCH="${{ github.head_ref || github.ref_name }}"
+          git clone --depth 1 --branch "$BRANCH" https://github.com/mlaify/aegis-core.git aegis-core 2>/dev/null || \
+          git clone --depth 1 --branch main https://github.com/mlaify/aegis-core.git aegis-core
+          ln -s "$GITHUB_WORKSPACE/aegis-core" "$GITHUB_WORKSPACE/../aegis-core"
+
+      - name: Checkout aegis-ffi sibling
+        run: |
+          BRANCH="${{ github.head_ref || github.ref_name }}"
+          git clone --depth 1 --branch "$BRANCH" https://github.com/mlaify/aegis-ffi.git aegis-ffi 2>/dev/null || \
+          git clone --depth 1 --branch main https://github.com/mlaify/aegis-ffi.git aegis-ffi
+          ln -s "$GITHUB_WORKSPACE/aegis-ffi" "$GITHUB_WORKSPACE/../aegis-ffi"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Set ANDROID_NDK_HOME
+        # GitHub-hosted ubuntu runners ship the Android SDK + NDK
+        # preinstalled. The NDK lives at $ANDROID_HOME/ndk/<version>; pick
+        # the latest that's installed.
+        run: |
+          NDK=$(ls "$ANDROID_HOME/ndk" | sort -V | tail -1)
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK" >> "$GITHUB_ENV"
+
+      - name: Build aegis-ffi for Android + host + generate Kotlin bindings
+        run: ./scripts/build-jni.sh
+
+      - name: Confirm checked-in Kotlin bindings match generated output
+        # Catches the case where someone changes the FFI surface in
+        # aegis-ffi without re-running build-jni.sh and committing the
+        # regenerated bindings here.
+        run: |
+          if ! git diff --quiet -- app/src/main/java/uniffi/aegis_ffi/aegis_ffi.kt; then
+            echo "::error::Generated Kotlin bindings differ from the committed copy."
+            echo "Run ./scripts/build-jni.sh and commit the diff."
+            git --no-pager diff -- app/src/main/java/uniffi/aegis_ffi/aegis_ffi.kt
+            exit 1
+          fi
+
+      - name: Gradle unit tests
+        run: ./gradlew :app:test --no-daemon
+
+      - name: Gradle assembleDebug
+        run: ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Gradle lint
+        run: ./gradlew :app:lintDebug --no-daemon
