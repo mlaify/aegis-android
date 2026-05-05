@@ -21,6 +21,9 @@ import io.aegis.android.ui.SetupScreen
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Wire the persistent vault before the Compose tree mounts —
+        // AppSession queries Aegis.isVaultPresent() at init.
+        io.aegis.android.core.Aegis.configureWithKeystore(applicationContext)
         enableEdgeToEdge()
         setContent {
             AegisTheme {
