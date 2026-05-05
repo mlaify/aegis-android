@@ -73,6 +73,15 @@ internal object VaultCrypto {
         return SecretKeySpec(bytes, "AES")
     }
 
+    /** Import 32 raw bytes (e.g. WebAuthn PRF output) as an AES-256-GCM
+     *  KEK. Used by the passkey unlock flow — the PRF extension's
+     *  deterministic 32-byte output is the KEK that wraps masterKey,
+     *  same as on aegis-apple / aegis-web. */
+    fun importKekFromBytes(bytes: ByteArray): SecretKey {
+        require(bytes.size == 32) { "PRF KEK must be 32 bytes (got ${bytes.size})" }
+        return SecretKeySpec(bytes, "AES")
+    }
+
     /** Wrap the master key under a KEK: returns the IV used and the
      *  resulting AES-GCM ciphertext+tag concatenated, matching the web
      *  vault's `wrapped_master_key_b64` shape. */

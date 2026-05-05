@@ -85,6 +85,13 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.datastore.preferences)
 
+    // Passkey / WebAuthn ceremonies via the system Credential Manager.
+    // `credentials` is the umbrella API; `credentials-play-services-auth`
+    // is the provider shim that lets Google Password Manager respond to
+    // PublicKeyCredential requests on devices with Play Services.
+    implementation(libs.androidx.credentials)
+    implementation(libs.androidx.credentials.play.services.auth)
+
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.tooling.preview)

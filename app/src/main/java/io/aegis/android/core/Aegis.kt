@@ -204,6 +204,142 @@ object Aegis {
         throw lastError as? VaultError ?: VaultError.WrongPassphrase
     }
 
+    // ----------------------------------------------------------------------
+    // Passkey unlock (WebAuthn PRF extension)
+    //
+    // The vault wraps `masterKey` with one AES-GCM KEK per enrolled
+    // unlock method. For passkeys, that KEK is the WebAuthn PRF
+    // extension's deterministic 32-byte output — same model the web
+    // client and aegis-apple use, so a passkey enrolled on one platform
+    // produces the same KEK on every other platform for the same
+    // (credential, salt) pair (vault contents themselves are
+    // per-device).
+    //
+    // Caller responsibilities (lives in ui / session layer):
+    //   1. Drive androidx.credentials.CredentialManager with a
+    //      WebAuthn PRF registration or assertion request against
+    //      `Passkey.RP_ID` (auth.mlaify.io).
+    //   2. Hand the resulting (credentialId, prfOutput) back here.
+    //
+    // Aegis's job is only the vault-side bookkeeping: random salt,
+    // KEK construction from PRF bytes, AES-GCM wrap/unwrap of
+    // masterKey, and persistence of the new method entry.
+    // ----------------------------------------------------------------------
+
+    /** Information needed to drive a WebAuthn assertion that will
+     *  unlock the vault: which credential to ask for, and which PRF
+     *  salt to evaluate against. Mirrors the Swift
+     *  `Aegis.PasskeyChallenge` and the web's
+     *  `PasskeyUnlockChallenge`. */
+    data class PasskeyChallenge(
+        val methodId: String,
+        val credentialIdB64: String,
+        val prfSaltB64: String,
+    )
+
+    /** Generate a fresh 32-byte PRF salt. Per-credential, fixed at
+     *  enrollment, never reused across credentials. */
+    fun newPrfSalt(): ByteArray = VaultCrypto.randomBytes(32)
+
+    /** Snapshot of every enrolled passkey's (credentialId, prfSalt)
+     *  pair. The caller passes the credentialIds into
+     *  `CredentialManager`'s assertion request and the matching salt
+     *  into the PRF extension input. */
+    fun listPasskeyChallenges(): List<PasskeyChallenge> {
+        val persisted = store().load() ?: return emptyList()
+        return persisted.vault.unlockMethods
+            .filterIsInstance<PasskeyMethod>()
+            .map {
+                PasskeyChallenge(
+                    methodId = it.id,
+                    credentialIdB64 = it.credentialIdB64,
+                    prfSaltB64 = it.prfSaltB64,
+                )
+            }
+    }
+
+    /** Enroll a new passkey unlock method. Requires an unlocked
+     *  session — the caller is wrapping the in-memory masterKey under
+     *  a freshly-derived PRF KEK and persisting the wrapped copy.
+     *
+     *  @param prfOutput 32-byte WebAuthn PRF assertion output. Used
+     *    directly as an AES-256-GCM key.
+     *  @param credentialIdB64 WebAuthn credential ID (raw bytes,
+     *    base64-encoded).
+     *  @param prfSaltB64 PRF salt fed into the assertion,
+     *    base64-encoded.
+     *  @param label optional human-readable label.
+     *  @return the new method's ID. */
+    @Throws(VaultError::class)
+    fun enrollPasskeyMethod(
+        prfOutput: ByteArray,
+        credentialIdB64: String,
+        prfSaltB64: String,
+        label: String? = null,
+    ): String {
+        require(prfOutput.size == 32) {
+            "PRF output must be 32 bytes (got ${prfOutput.size})"
+        }
+        val masterKey = Session.masterKey ?: throw VaultError.Locked
+        val persisted = store().load() ?: throw VaultError.NoVault
+
+        val kek = VaultCrypto.importKekFromBytes(prfOutput)
+        val (wrapIv, wrapped) = VaultCrypto.wrapMasterKey(masterKey, kek)
+        val method = PasskeyMethod(
+            id = VaultCrypto.newMethodId(),
+            enrolledAt = Instant.now().toString(),
+            label = label,
+            credentialIdB64 = credentialIdB64,
+            prfSaltB64 = prfSaltB64,
+            ivB64 = b64(wrapIv),
+            wrappedMasterKeyB64 = b64(wrapped),
+        )
+        store().save(
+            PersistedIdentity(
+                documentJson = persisted.documentJson,
+                vault = persisted.vault.copy(
+                    unlockMethods = persisted.vault.unlockMethods + method,
+                ),
+            )
+        )
+        return method.id
+    }
+
+    /** Unlock the vault using a successful WebAuthn assertion. The
+     *  caller has already driven the Passkey UI and obtained a
+     *  32-byte PRF output for a specific credential — we look up the
+     *  matching passkey method by credential ID, derive the KEK from
+     *  the PRF output, and unwrap masterKey. */
+    @Throws(VaultError::class)
+    fun unlockVaultWithPrf(prfOutput: ByteArray, credentialIdB64: String) {
+        require(prfOutput.size == 32) {
+            "PRF output must be 32 bytes (got ${prfOutput.size})"
+        }
+        val persisted = store().load() ?: throw VaultError.NoVault
+        if (persisted.vault.version != 2) {
+            throw VaultError.UnsupportedVersion(persisted.vault.version)
+        }
+        val method = persisted.vault.unlockMethods
+            .filterIsInstance<PasskeyMethod>()
+            .firstOrNull { it.credentialIdB64 == credentialIdB64 }
+            ?: throw VaultError.NoSuchMethod(credentialIdB64)
+
+        val kek = VaultCrypto.importKekFromBytes(prfOutput)
+        val masterKey = VaultCrypto.unwrapMasterKey(
+            fromB64(method.wrappedMasterKeyB64),
+            fromB64(method.ivB64),
+            kek,
+        )
+        val secretsJson = VaultCrypto.decryptSecrets(
+            fromB64(persisted.vault.ciphertextB64),
+            fromB64(persisted.vault.masterIvB64),
+            masterKey,
+        )
+        Session.masterKey = masterKey
+        Session.unlockedSecretsJson = secretsJson
+        Session.unlockedDocumentJson = persisted.documentJson
+    }
+
     /** Drop the in-memory master key. The vault stays in storage. */
     fun lockVault() {
         Session.masterKey = null
