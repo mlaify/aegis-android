@@ -43,7 +43,7 @@ aegis-android/
 [`mlaify/aegis-ffi`](https://github.com/mlaify/aegis-ffi).
 
 **Phase 4b — Android client:** in progress, mirroring
-[`mlaify/aegis-apple`](https://github.com/mlaify/aegis-apple) feature-for-feature.
+[`TFFHRTP/aegis-apple`](https://github.com/TFFHRTP/aegis-apple) feature-for-feature.
 
 | Track | iOS | Android |
 |-------|-----|---------|
