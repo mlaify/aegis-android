@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import io.aegis.android.core.Aegis
 import io.aegis.android.core.AegisIdentity
 import io.aegis.android.core.VaultError
+import io.aegis.android.passkey.PasskeyService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -108,6 +109,71 @@ class AppSession(application: Application) : AndroidViewModel(application) {
             _state.value = State.Unlocked(identity)
         }
     }
+
+    /** Enroll a new Passkey unlock method on this device. Requires the
+     *  vault to be unlocked. Drives androidx.credentials.CredentialManager
+     *  to create a platform Passkey, then immediately asserts it once
+     *  to harvest the WebAuthn PRF output (32 bytes), and uses that as
+     *  the AES-GCM KEK to wrap a fresh copy of the in-memory
+     *  masterKey, persisting the new method to the vault. */
+    suspend fun enrollPasskey(label: String? = null) {
+        val identity = (state.value as? State.Unlocked)?.identity
+            ?: throw IllegalStateException("vault must be unlocked to enroll a passkey")
+        val service = PasskeyService(getApplication())
+        val result = service.register(
+            identityId = identity.identityId,
+            identityLabel = label ?: "Aegis",
+        )
+        withContext(Dispatchers.IO) {
+            Aegis.enrollPasskeyMethod(
+                prfOutput = result.prfOutput,
+                credentialIdB64 = java.util.Base64.getEncoder().encodeToString(result.credentialId),
+                prfSaltB64 = java.util.Base64.getEncoder().encodeToString(result.prfSalt),
+                label = label,
+            )
+        }
+    }
+
+    /** Attempt to unlock the on-device vault by asserting one of the
+     *  enrolled Passkeys. Returns true on success, false when no
+     *  Passkey method is enrolled. Throws on assertion errors (user
+     *  cancellation surfaces as `PasskeyError.UserCancelled`). */
+    suspend fun unlockWithPasskey(): Boolean {
+        val challenges = withContext(Dispatchers.IO) { Aegis.listPasskeyChallenges() }
+        if (challenges.isEmpty()) return false
+
+        val saltsByCredId = mutableMapOf<String, ByteArray>()
+        val allowed = mutableListOf<ByteArray>()
+        for (c in challenges) {
+            val credId = java.util.Base64.getDecoder().decode(c.credentialIdB64)
+            val salt = java.util.Base64.getDecoder().decode(c.prfSaltB64)
+            allowed.add(credId)
+            // PasskeyService keys the salt map by base64url-encoded
+            // credential ID (matches WebAuthn JSON's evalByCredential
+            // shape). Convert from the standard-base64 storage form.
+            val credIdB64Url = java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(credId)
+            saltsByCredId[credIdB64Url] = salt
+        }
+        val service = PasskeyService(getApplication())
+        val asserted = service.assert(
+            allowedCredentialIds = allowed,
+            saltsByCredentialId = saltsByCredId,
+        )
+        withContext(Dispatchers.IO) {
+            Aegis.unlockVaultWithPrf(
+                prfOutput = asserted.prfOutput,
+                credentialIdB64 = java.util.Base64.getEncoder().encodeToString(asserted.credentialId),
+            )
+            _state.value = State.Unlocked(Aegis.loadIdentity())
+        }
+        return true
+    }
+
+    /** True iff at least one Passkey method is enrolled on this
+     *  device. UI uses this to gate the "Unlock with Passkey" button. */
+    fun hasPasskeyMethod(): Boolean =
+        Aegis.listUnlockMethods().any { it.type == "passkey" }
 
     /** Drop the in-memory masterKey. The vault stays in storage. */
     fun lock() {

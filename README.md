@@ -58,8 +58,8 @@ aegis-android/
 | CI workflow | ✅ macos | ✅ ubuntu |
 | **Encrypted-at-rest identity storage + passphrase unlock** | ✅ Keychain (aegis-apple#2) | ✅ AndroidX Keystore + SharedPreferences (this PR) |
 | **Vault Codable types byte-compatible with web v2 schema** | ✅ | ✅ |
-| **Mail-app shell post-unlock — Inbox / Sent / Drafts mailboxes + Settings (relay + identity), placeholder content until inbox sync lands** | ✅ macOS `NavigationSplitView` (aegis-apple#5) / iOS `NavigationSplitView` (next) | ✅ Compose `NavigationBar` shell (this PR) |
-| Passkey unlock | ⏳ next (needs apple-app-site-association) | ⏳ next (needs digital-asset-links) |
+| Mail-app shell post-unlock — Inbox / Sent / Drafts mailboxes + Settings (relay + identity), placeholder content until inbox sync lands | ✅ macOS `NavigationSplitView` + iOS `NavigationSplitView` (aegis-apple#5/#6) | ✅ Compose `NavigationBar` shell |
+| **Passkey unlock — WebAuthn PRF extension wraps masterKey under the 32-byte PRF output as AES-GCM KEK; byte-compatible with web vault format** | ✅ aegis-apple#7 (`webcredentials:auth.mlaify.io` AASA, ASAuthorizationController, iOS 18 / macOS 15 floor) | ✅ this PR (`androidx.credentials.CredentialManager`, `assetlinks.json` digital-asset-links at auth.mlaify.io) |
 | Inbox / Compose / Identity-detail / publish-to-relay flows | next iteration | next iteration |
 
 ## Quick start

@@ -311,6 +311,126 @@ class VaultTest {
         )
     }
 
+    // --------------------------------------------------------------
+    // Passkey method (PRF-derived KEK) — vault-side bookkeeping
+    //
+    // We can't actually drive CredentialManager from a unit test
+    // (no UI, no platform Passkey provider), so these exercise the
+    // Aegis facade with a synthetic 32-byte PRF output — pretending
+    // the WebAuthn assertion happened and we got back these bytes.
+    // The crypto path (AES-GCM wrap/unwrap with the PRF bytes as
+    // KEK) is what matters here; the CredentialManager integration
+    // is exercised manually on real devices.
+    // --------------------------------------------------------------
+
+    @Test
+    fun `enrollPasskey persists method and round-trips through unlockWithPrf`() {
+        val id = "amp:did:key:zPasskeyEnroll"
+        val identity = Aegis.generateIdentity(id)
+        val signed = Aegis.signIdentityDocument(identity)
+        Aegis.createVault(identity = signed, passphrase = "pp")
+
+        val prfOutput = ByteArray(32) { it.toByte() }
+        val credentialId = ByteArray(16) { (it * 7).toByte() }
+        val salt = ByteArray(32) { (it * 3).toByte() }
+
+        val methodId = Aegis.enrollPasskeyMethod(
+            prfOutput = prfOutput,
+            credentialIdB64 = java.util.Base64.getEncoder().encodeToString(credentialId),
+            prfSaltB64 = java.util.Base64.getEncoder().encodeToString(salt),
+            label = "Test Passkey",
+        )
+        assertTrue(methodId.isNotEmpty())
+
+        // Method appears in the vault metadata.
+        val methods = Aegis.listUnlockMethods()
+        assertEquals(2, methods.size) // passphrase + passkey
+        assertTrue(methods.any { it.type == "passkey" && it.label == "Test Passkey" })
+
+        // Listed in the passkey-specific challenge view too.
+        val challenges = Aegis.listPasskeyChallenges()
+        assertEquals(1, challenges.size)
+        assertEquals(
+            java.util.Base64.getEncoder().encodeToString(credentialId),
+            challenges[0].credentialIdB64,
+        )
+
+        // Lock + unlock with the synthetic PRF output round-trips
+        // through the same KEK derivation path the live Passkey flow
+        // uses.
+        Aegis.lockVault()
+        assertTrue(Aegis.isVaultLocked())
+
+        Aegis.unlockVaultWithPrf(
+            prfOutput = prfOutput,
+            credentialIdB64 = java.util.Base64.getEncoder().encodeToString(credentialId),
+        )
+        assertFalse(Aegis.isVaultLocked())
+
+        val loaded = Aegis.loadIdentity()
+        assertEquals(id, loaded.identityId)
+        assertEquals(signed.secretsJson, loaded.secretsJson)
+    }
+
+    @Test
+    fun `enrollPasskey rejects locked vault`() {
+        val identity = Aegis.generateIdentity("amp:did:key:zNoEnroll")
+        Aegis.createVault(identity = identity, passphrase = "pp")
+        Aegis.lockVault()
+        try {
+            Aegis.enrollPasskeyMethod(
+                prfOutput = ByteArray(32),
+                credentialIdB64 = "AAAA",
+                prfSaltB64 = "AAAA",
+            )
+            fail("expected VaultError.Locked")
+        } catch (_: VaultError.Locked) {
+            // expected
+        }
+    }
+
+    @Test
+    fun `unlockWithPrf throws WrongPassphrase on wrong PRF output`() {
+        val identity = Aegis.generateIdentity("amp:did:key:zWrongPrf")
+        Aegis.createVault(identity = identity, passphrase = "pp")
+        val credentialId = ByteArray(16) { it.toByte() }
+        val realPrf = ByteArray(32) { 0xAB.toByte() }
+        val wrongPrf = ByteArray(32) { 0xCD.toByte() }
+
+        Aegis.enrollPasskeyMethod(
+            prfOutput = realPrf,
+            credentialIdB64 = java.util.Base64.getEncoder().encodeToString(credentialId),
+            prfSaltB64 = "c2FsdA==",
+        )
+        Aegis.lockVault()
+
+        try {
+            Aegis.unlockVaultWithPrf(
+                prfOutput = wrongPrf,
+                credentialIdB64 = java.util.Base64.getEncoder().encodeToString(credentialId),
+            )
+            fail("expected VaultError.WrongPassphrase on wrong PRF")
+        } catch (_: VaultError.WrongPassphrase) {
+            // expected
+        }
+    }
+
+    @Test
+    fun `removeUnlockMethod can drop a passkey while keeping the passphrase`() {
+        val identity = Aegis.generateIdentity("amp:did:key:zRmPasskey")
+        Aegis.createVault(identity = identity, passphrase = "pp")
+        val credId = ByteArray(16) { it.toByte() }
+        val pkId = Aegis.enrollPasskeyMethod(
+            prfOutput = ByteArray(32) { 0x55.toByte() },
+            credentialIdB64 = java.util.Base64.getEncoder().encodeToString(credId),
+            prfSaltB64 = "c2FsdA==",
+        )
+        Aegis.removeUnlockMethod(pkId)
+        val methods = Aegis.listUnlockMethods()
+        assertEquals(1, methods.size)
+        assertEquals("passphrase", methods[0].type)
+    }
+
     @Test
     fun `unconfigured Aegis throws NotConfigured on vault calls`() {
         // Replace the store via reflection to clear it.

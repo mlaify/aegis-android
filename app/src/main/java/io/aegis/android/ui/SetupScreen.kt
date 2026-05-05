@@ -198,7 +198,9 @@ private fun UnlockSection(
 ) {
     var passphrase by remember { mutableStateOf("") }
     var unlocking by remember { mutableStateOf(false) }
+    var passkeyUnlocking by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val hasPasskey = remember { session.hasPasskeyMethod() }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Unlock", style = MaterialTheme.typography.titleMedium)
@@ -238,6 +240,28 @@ private fun UnlockSection(
             enabled = !unlocking && passphrase.isNotEmpty(),
         ) {
             Text(if (unlocking) "Unlocking…" else "Unlock")
+        }
+        if (hasPasskey) {
+            Button(
+                onClick = {
+                    passkeyUnlocking = true
+                    scope.launch {
+                        try {
+                            val ok = session.unlockWithPasskey()
+                            if (!ok) onStatus("No passkeys are enrolled on this device.")
+                        } catch (e: io.aegis.android.passkey.PasskeyError.UserCancelled) {
+                            // User dismissed the prompt — quiet.
+                        } catch (e: Throwable) {
+                            onStatus("Passkey unlock failed — ${e.message ?: e::class.simpleName}")
+                        } finally {
+                            passkeyUnlocking = false
+                        }
+                    }
+                },
+                enabled = !passkeyUnlocking,
+            ) {
+                Text(if (passkeyUnlocking) "Unlocking…" else "Unlock with Passkey")
+            }
         }
         Button(
             onClick = {
