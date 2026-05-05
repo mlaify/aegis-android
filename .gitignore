@@ -1,0 +1,21 @@
+# Gradle / Android Studio
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Bridging artifacts
+bindings/
+target/
+jniLibs/
+
+# macOS dev hosts
+.DS_Store
+
+# Keystores must never be committed
+*.jks
+*.keystore

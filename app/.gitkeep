@@ -1,0 +1,4 @@
+Reserved for the Android Studio project (Kotlin + Jetpack Compose).
+
+The Gradle layout, Compose UI, and Kotlin bindings consumption from
+mlaify/aegis-ffi will land here in a follow-up PR.
