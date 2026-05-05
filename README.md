@@ -58,6 +58,7 @@ aegis-android/
 | CI workflow | ✅ macos | ✅ ubuntu |
 | **Encrypted-at-rest identity storage + passphrase unlock** | ✅ Keychain (aegis-apple#2) | ✅ AndroidX Keystore + SharedPreferences (this PR) |
 | **Vault Codable types byte-compatible with web v2 schema** | ✅ | ✅ |
+| **Mail-app shell post-unlock — Inbox / Sent / Drafts mailboxes + Settings (relay + identity), placeholder content until inbox sync lands** | ✅ macOS `NavigationSplitView` (aegis-apple#5) / iOS `NavigationSplitView` (next) | ✅ Compose `NavigationBar` shell (this PR) |
 | Passkey unlock | ⏳ next (needs apple-app-site-association) | ⏳ next (needs digital-asset-links) |
 | Inbox / Compose / Identity-detail / publish-to-relay flows | next iteration | next iteration |
 
