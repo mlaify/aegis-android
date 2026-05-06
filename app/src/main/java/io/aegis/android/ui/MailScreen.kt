@@ -83,7 +83,11 @@ fun MailScreen(
             .padding(padding)
         ) {
             when (selected) {
-                MailDestination.Inbox,
+                MailDestination.Inbox ->
+                    // Wired in aegis-android Round-3 part 1 — fetches
+                    // envelopes from the relay and opens them via the
+                    // FFI's openHybridPq.
+                    InboxScreen(session = session)
                 MailDestination.Sent,
                 MailDestination.Drafts ->
                     MailboxPlaceholder(destination = selected)
@@ -116,8 +120,8 @@ private fun MailboxPlaceholder(destination: MailDestination) {
                 style = MaterialTheme.typography.titleMedium,
             )
             Text(
-                "${destination.title} is empty. Inbox sync, compose, and " +
-                    "relay publish land in the next iteration.",
+                "${destination.title} is empty. Compose and relay publish " +
+                    "land in the next iteration.",
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
             )
